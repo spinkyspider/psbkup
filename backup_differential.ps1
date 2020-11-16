@@ -35,41 +35,47 @@
 #  * Spaces are okay               ( good:  "c:\my folder\with spaces" )
 #  * Network paths are okay        ( good:  "\\server\share name"      )
 param (
+
+	# Specify an action to take
+	[Parameter(Position=0)]
+	[string]$action_flag = '-h',
+	
+	
 	# Specify the folder you want to back up here.
-#	[string]$source = "C:\BOOTDRV",
-	[string]$source = "C:\ABTEST",
+	[string]$source = 'C:\ABTEST',
 
 	# Key (password) for archive encryption. If blank, no encryption is used
-	[string]$encryption_key = "", #RcS#added a comma because it seemed to make sense. :-?
+	[string]$encryption_key = '',
 	
 	# Work area where everything is stored while compressing. Should be a fast drive or something that can handle a lot of writes
 	# Recommend not using a network share unless it's Gigabit or faster.
-	[string]$staging = "C:\temp\ALOHABACKUPSTAGING",
+	[string]$staging = 'C:\temp\ALOHABACKUPSTAGING',
 
 	# This is the final, long-term destination for your backup after it is compressed.
-	[string]$destination = "Z:\BOOTDRV",
+	[string]$destination = 'Z:\BOOTDRV',
 
 	# If you want to customize the prefix of the backup files, do so here. Don't use any special characters (like underscores)
 	# The script automatically suffixes an underscore to this name. Recommend not changing this unless you really need to.
 	#  * Spaces are NOT OKAY to use here!
-	[string]$backup_prefix = "backup",
+	[string]$backup_prefix = 'backup',
 
 	# OPTIONAL: If you want to exclude some files or folders, you can specify your exclude file here. The exclude file is a list of 
 	# files or folders (wildcards in the form of * are allowed and recommended) to exclude
 	# If you specify a file here and the script can't find it, it will abort
 	# If you leave this variable blank the script will ignore it
 #	[string]$exclusions_file = "R:\scripts\sysadmin\backup_differential_excludes.txt",
-	[string]$exclusions_file = "",
+	[string]$exclusions_file = '',
 
 	# Log settings. Max size is how big (in bytes) the log can be before it is archived. 1048576 bytes is one megabyte
-	[string]$logpath = $env:systemdrive + "\Logs",
-	[string]$logfile = "$env:computername_$backup_prefix_differential.log",
-	[string]$log_max_size = "104857600",
+	[string]$logpath = $env:systemdrive + '\Logs',
+	[string]$logfile = $env:computername + '_' + $backup_prefix + '_differential.log',
+	[string]$log_max_size = '104857600',
 
 	# Location of 7-Zip and forfiles.exe
-	[string]$sevenzip = "$env:ProgramFiles\7-Zip\7z.exe",
-	[string]$forfiles = "$env:windir\system32\forfiles.exe",
-	[string]$config_dump = "jacked up"
+	[string]$sevenzip = $env:ProgramFiles + '\7-Zip\7z.exe',
+	[string]$forfiles = $env:windir + '\system32\forfiles.exe',
+	[string]$config_dump = 'jacked up',
+	[string]$f = '-f'
 )
 
 
@@ -90,25 +96,16 @@ $START_TIME = get-date -f "yyyy-mm-dd hh:mm:ss"
 
 # Preload variables for use later
 $ARGS_ARRAY   = $args
-$JOB_TYPE     = $args[0]
+#$JOB_TYPE     = $args[0]
+$JOB_TYPE     = $action_flag
 $JOB_ERROR    = "0"
-$DAYS         = $Args[1]
+$DAYS         = $args[1]
 $RESTORE_TYPE = "NUL"
 $SCRIPT_NAME  = "backup_differential.ps1"
 
-# Parse CLI args
-
-	if ( $JOB_TYPE -eq "-f" ) { $JOB_TYPE = "full" }
-	if ( $JOB_TYPE -eq "-d" ) { $JOB_TYPE = "differential" }
-	if ( $JOB_TYPE -eq "-r" ) { $JOB_TYPE = "restore" }
-	if ( $JOB_TYPE -eq "-a" ) { $JOB_TYPE = "archive_backup_set" }
-	if ( $JOB_TYPE -eq "-p" ) { $JOB_TYPE = "purge_archives" }
-	if ( $JOB_TYPE -eq "-c" ) { $JOB_TYPE = "config_dump" }
-
-
-
-# Show help if requested  #RcS#added empty case so script doesn't run without parameters
-if ( $args[0] -eq "-h" -or $args[0] -eq "/h" -or $args[0] -eq "--h" -or $args[0] -eq "--help" -or $args.count -eq 0 ) { $JOB_TYPE = "help"
+# Out put help message
+function helpout()
+{
 	""
 	write-output "  $SCRIPT_NAME v$SCRIPT_VERSION"
 	""
@@ -131,6 +128,34 @@ if ( $args[0] -eq "-h" -or $args[0] -eq "/h" -or $args[0] -eq "--h" -or $args[0]
 	write-output "  Edit this script before running it to specify your source, destination, and work directories."
 	exit(0)
 }
+
+
+# Parse CLI args
+
+
+	if     ( $JOB_TYPE -eq "-f" ) { $JOB_TYPE = "full" }
+	elseif ( $JOB_TYPE -eq "-d" ) { $JOB_TYPE = "differential" }
+	elseif ( $JOB_TYPE -eq "-r" ) { $JOB_TYPE = "restore" }
+	elseif ( $JOB_TYPE -eq "-a" ) { $JOB_TYPE = "archive_backup_set" }
+	elseif ( $JOB_TYPE -eq "-p" ) { $JOB_TYPE = "purge_archives" }
+	elseif ( $JOB_TYPE -eq "-c" ) { $JOB_TYPE = "config_dump" }
+	else { $JOB_TYPE = "help"}
+
+
+
+# Show help if requested  #RcS#added empty case so script doesn't run without parameters
+if ( $args[0] -eq "-h" -or 
+	 $args[0] -eq "/h" -or 
+	 $args[0] -eq "--h" -or 
+	 $args[0] -eq "--help" -or 
+	 $args.count -eq 0 -or
+	 $JOB_TYPE -eq "help") { $JOB_TYPE = "help"
+
+		helpout
+ 
+ }
+	write-output "Job Type: $JOB_TYPE"
+	exit(0)
 
 # Make logfile if it doesn't exist
 if (!(test-path $logpath)) { new-item -path $logpath -itemtype directory }
@@ -535,6 +560,9 @@ function logliteral($message, $color)
 	#log
 	"$message" | out-file -Filepath $logfile -append
 }
+
+
+
 
 
 # call the main script
