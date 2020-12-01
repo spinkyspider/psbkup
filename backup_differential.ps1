@@ -11,15 +11,15 @@
                 where each job calls the script with a different flag.
  Usage:         Run this script without any flags for a list of possible actions. Run it with a flag to perform that action.
                 Flags:
-                 -f   create full backup
-                 -d   create differential backup (full backup must already exist)
-                 -r   restore from a backup (extracts to your staging area)
-                 -a   archive (close out/rotate) the current backup set. This:
-                      1. moves all .7z files in the $destination into a folder named with the current date
-                      2. deletes all .7z files from the staging area
-                 -p   purge (delete) old backup sets from staging and destination. If you specify a number 
-                      of days after the command it will run automatically without any confirmation. Be careful with this!
-                 -c   config dump. Show job options (show what the variables are set to)
+                 -full         create full backup
+                 -diff         create differential backup (full backup must already exist)
+                 -restrore     restore from a backup (extracts to your staging area)
+                 -archive      archive (close out/rotate) the current backup set. This:
+                                  1. moves all .7z files in the $destination into a folder named with the current date
+                                  2. deletes all .7z files from the staging area
+                 -purge        purge (delete) old backup sets from staging and destination. If you specify a number 
+                                of days after the command it will run automatically without any confirmation. Be careful with this!
+                 -configdump   config dump. Show job options (show what the variables are set to)
  Important:     If you want to set this script up in Windows Task Scheduler, be aware that Task Scheduler
                 can't use mapped network drives (X:\, Z:\, etc) when it is set to "Run even if user isn't logged on."
                 The task will simply fail to do anything (because Scheduler can't see the drives). To work around this use
@@ -36,11 +36,23 @@
 #  * Network paths are okay        ( good:  "\\server\share name"      )
 param (
 
-	# Specify an action to take
-	[Parameter(Position=0)]
-	[string]$action_flag = '-h',
-	
-	
+	# Catch which action to take
+
+    [Parameter(Position=0,Mandatory=$false)]
+    [switch]$full,	
+    [Parameter(Position=0,Mandatory=$false)]
+    [switch]$diff,	
+    [Parameter(Position=0,Mandatory=$false)]
+    [switch]$restore,	
+    [Parameter(Position=0,Mandatory=$false)]
+    [switch]$archive,	
+    [Parameter(Position=0,Mandatory=$false)]
+    [switch]$purge,	
+    [Parameter(Position=0,Mandatory=$false)]
+    [switch]$configdump,	
+    [Parameter(Position=0,Mandatory=$false)]
+    [switch]$help,	
+
 	# Specify the folder you want to back up here.
 	[string]$source = 'C:\ABTEST',
 
@@ -74,34 +86,53 @@ param (
 	# Location of 7-Zip and forfiles.exe
 	[string]$sevenzip = $env:ProgramFiles + '\7-Zip\7z.exe',
 	[string]$forfiles = $env:windir + '\system32\forfiles.exe',
-	[string]$config_dump = 'jacked up',
-	[string]$f = '-f'
+    [string]$DAYS = '180'
 )
-
 
 
 # ----------------------------- Don't edit anything below this line ----------------------------- ::
 
+###################
+# TO DO SECTION   #
+###################
+<#
+    Need to catch empty or unknown parameters: throw to helpout
+    Need to protect purge code: make safe
+    Functionize each action code block
+    Fix sanity checks: debug doesn't parse them
+    Full backup file not dated
+    Diff backup file not included?
 
+#>
 
 
 ###################
 # PREP AND CHECKS #
 ###################
-$SCRIPT_VERSION = "0.2.0"
+$SCRIPT_VERSION = "0.2.1"
 $SCRIPT_UPDATED = "2020-11-11"
 $CUR_DATE=get-date -f "yyyy-MM-dd"
 $START_TIME = get-date -f "yyyy-mm-dd hh:mm:ss"
 
-
 # Preload variables for use later
-$ARGS_ARRAY   = $args
-#$JOB_TYPE     = $args[0]
-$JOB_TYPE     = $action_flag
+if     ( $full) { $JOB_TYPE = "full" }
+	elseif ( $diff ) { $JOB_TYPE = "differential" }
+	elseif ( $restore ) { $JOB_TYPE = "restore" }
+	elseif ( $archive ) { $JOB_TYPE = "archive_backup_set" }
+	elseif ( $purge ) { $JOB_TYPE = "purge_archives" }
+	elseif ( $configdump ) { $JOB_TYPE = "config_dump" }
+	else { $JOB_TYPE = "help"}
+
 $JOB_ERROR    = "0"
-$DAYS         = $args[1]
 $RESTORE_TYPE = "NUL"
 $SCRIPT_NAME  = "backup_differential.ps1"
+
+
+###################
+#    FUNCTIONS    #
+###################
+
+
 
 # Out put help message
 function helpout()
@@ -109,53 +140,79 @@ function helpout()
 	""
 	write-output "  $SCRIPT_NAME v$SCRIPT_VERSION"
 	""
-	write-output "  Usage: $SCRIPT_NAME < -f | -d | -r | -a | -c [days] >"
+	write-output "  Usage: $SCRIPT_NAME < -full | -diff | -restore | -archive | -purge [days] -configdump -help >"
 	""
 	write-output "  Flags:"
-	write-output "   -f:  create full backup"
-	write-output "   -d:  create differential backup (requires an existing full backup)"
-	write-output "   -r:  restore from a backup (extracts to $staging\$backup_prefix_restore)"
-	write-output "   -a:  archive current backup set. This will:"
-	write-output "         1. move all .7z files located in:"
-	write-output "            $destination"
-	write-output "            into a dated archive folder."
-	write-output "         2. purge (delete) all copies in the staging area ($staging)"
-	write-output "   -p:  purge (AKA delete) archived backup sets from staging and long-term storage"
-	write-output "        Optionally specify number of days to run automatically. Be careful with this!"
-	write-output "        Note that this requires a previously-archived backup set (-a option)"
-	write-output "   -c:  config dump (show what parameters the script WOULD execute with)"
+	write-output "   -full:        create full backup"
+	write-output "   -diff:        create differential backup (requires an existing full backup)"
+	write-output "   -restore:     restore from a backup (extracts to $staging\$backup_prefix_restore)"
+	write-output "   -archive:     archive current backup set. This will:"
+	write-output "                    1. move all .7z files located in:"
+	write-output "                       $destination"
+	write-output "                       into a dated archive folder."
+	write-output "                    2. purge (delete) all copies in the staging area ($staging)"
+	write-output "   -purge:       purge (AKA delete) archived backup sets from staging and long-term storage"
+	write-output "                 Optionally specify number of days to run automatically. Be careful with this!"
+	write-output "                 Note that this requires a previously-archived backup set (-a option)"
+	write-output "   -configdump:  config dump (show what parameters the script WOULD execute with)"
 	""
 	write-output "  Edit this script before running it to specify your source, destination, and work directories."
 	exit(0)
 }
 
 
-# Parse CLI args
+
+function log($message, $color)
+{
+	if ($color -eq $null) {$color = "gray"}
+	#console
+	write-host (get-date -f "yyyy-mm-dd hh:mm:ss") -n -f darkgray; write-host "$message" -f $color
+	#log
+	(get-date -f "yyyy-mm-dd hh:mm:ss") +"$message" | out-file -Filepath $logfile -append
+}
+
+# Literal log (no date/time prefix)
+function logliteral($message, $color)
+{
+	if ($color -eq $null) {$color = "gray"}
+	#console
+	write-host "$message" -f $color
+	#log
+	"$message" | out-file -Filepath $logfile -append
+}
 
 
-	if     ( $JOB_TYPE -eq "-f" ) { $JOB_TYPE = "full" }
-	elseif ( $JOB_TYPE -eq "-d" ) { $JOB_TYPE = "differential" }
-	elseif ( $JOB_TYPE -eq "-r" ) { $JOB_TYPE = "restore" }
-	elseif ( $JOB_TYPE -eq "-a" ) { $JOB_TYPE = "archive_backup_set" }
-	elseif ( $JOB_TYPE -eq "-p" ) { $JOB_TYPE = "purge_archives" }
-	elseif ( $JOB_TYPE -eq "-c" ) { $JOB_TYPE = "config_dump" }
-	else { $JOB_TYPE = "help"}
+function configdump()
+{
+    logliteral ""
+	logliteral " Current configuration:"
+	logliteral ""
+	logliteral " Script version:       $SCRIPT_VERSION"
+	logliteral " Script updated:       $SCRIPT_UPDATED"
+	logliteral " Source:               $source"
+	logliteral " Destination:          $destination"
+	logliteral " Staging area:         $staging"
+	logliteral " Exclusions file:      $exclusions_file"
+	logliteral " Backup prefix:        $backup_prefix"
+	logliteral " Restores unpacked to: $staging\$backup_prefix_restore"
+	logliteral " Log file:             $logpath\$logfile"
+	logliteral ""
+	logliteral "Edit this script with a text editor to customize these options."
+	logliteral "" 
+    exit(0)
+}
+
+
+###################
+#  END FUNCTIONS  #
+###################
+
 
 
 
 # Show help if requested  #RcS#added empty case so script doesn't run without parameters
-if ( $args[0] -eq "-h" -or 
-	 $args[0] -eq "/h" -or 
-	 $args[0] -eq "--h" -or 
-	 $args[0] -eq "--help" -or 
-	 $args.count -eq 0 -or
-	 $JOB_TYPE -eq "help") { $JOB_TYPE = "help"
+if ( $JOB_TYPE -eq "help") { helpout }
 
-		helpout
- 
- }
-	write-output "Job Type: $JOB_TYPE"
-	exit(0)
 
 # Make logfile if it doesn't exist
 if (!(test-path $logpath)) { new-item -path $logpath -itemtype directory }
@@ -210,21 +267,7 @@ logliteral ""
 
 # Dump config if requested
 if ( $JOB_TYPE -eq "config_dump" ) {
-	logliteral ""
-	logliteral " Current configuration:"
-	logliteral ""
-	logliteral " Script version:       $SCRIPT_VERSION"
-	logliteral " Script updated:       $SCRIPT_UPDATED"
-	logliteral " Source:               $source"
-	logliteral " Destination:          $destination"
-	logliteral " Staging area:         $staging"
-	logliteral " Exclusions file:      $exclusions_file"
-	logliteral " Backup prefix:        $backup_prefix"
-	logliteral " Restores unpacked to: $staging\$backup_prefix_restore"
-	logliteral " Log file:             $logpath\$logfile"
-	logliteral ""
-	logliteral "Edit this script with a text editor to customize these options."
-	logliteral "" 
+    configdump
 	exit(0)
 }
 
@@ -275,10 +318,14 @@ if ( $JOB_TYPE -eq "full" ) {
 # // DIFFERENTIAL BACKUP: begin
 if ( $JOB_TYPE -eq "differential" ) { 
 
+    # Define differential backup file name
+    $ThisDiff = "$staging\$backup_prefix" + "_differential_" + "$CUR_DATE" + ".7z"
+    $FullBack = "$staging\$backup_prefix" + "_full.7z"
+
 	# Check for full backup existence
-	if (!"$staging\$backup_prefix_full.7z") {
+	if (!"$FullBack") {
 		$JOB_ERROR = "1"
-		log " ! ERROR: Couldn't find full backup file ($backup_prefix_full.7z). You must create a full backup before a differential can be created." yellow
+		log " ! ERROR: Couldn't find full backup file ($FullBack). You must create a full backup before a differential can be created." yellow
 		break
 	} else {
 		# Backup existed, so go ahead
@@ -291,11 +338,11 @@ if ( $JOB_TYPE -eq "differential" ) {
 	logliteral ""
 	log "------- [ Beginning of 7zip output ] -------"
 	# Run if we're using an exclusions file
-	if ( $exclusions_file -ne "" ) { & $sevenzip u "$staging\$backup_prefix_full.7z" "$source" -ms=off -mx=9 -xr@$exclusions_file -t7z -u- -up0q3r2x2y2z0w2!"$staging\$backup_prefix_differential_$CUR_DATE.7z"  }
+	if ( $exclusions_file -ne "" ) { & $sevenzip u "$FullBack" "$source" -ms=off -mx=9 -xr@$exclusions_file -t7z -u- -up0q3r2x2y2z0w2!"$ThisDiff"  }
 	
 	# Run if we're NOT using an exclusions file
-	if ( $exclusions_file -eq "" ) { & $sevenzip u "$staging\$backup_prefix_full.7z" "$source" -ms=off -mx=9 -t7z -u- -up0q3r2x2y2z0w2!"$staging\$backup_prefix_differential_$CUR_DATE.7z"  }
-	write-output "------- [ End of 7zip output ] -------" 
+	if ( $exclusions_file -eq "" ) { & $sevenzip u "$FullBack" "$source" -ms=off -mx=9 -t7z -u- -up0q3r2x2y2z0w2!"$ThisDiff"  }
+	log "------- [ End of 7zip output ] -------" 
 	logliteral ""
 
 	# Report on the build
@@ -307,8 +354,8 @@ if ( $JOB_TYPE -eq "differential" ) {
 	}
 
 	# Upload to destination
-	log "   Uploading $backup_prefix_differential_$CUR_DATE.7z to $destination..."
-	xcopy "$staging\$backup_prefix_differential_$CUR_DATE.7z" "$destination\" /Q /J /Y /Z 
+	log "   Uploading $ThisDiff to $destination..."
+	xcopy "$ThisDiff" "$destination\" /Q /J /Y /Z 
 
 	# Report on the upload
 	if ( $? -eq "True" ) {
@@ -542,24 +589,6 @@ if (test-path %TEMP%\DEATH_BY_HAMSTERS.txt) {del /F /Q %TEMP%\DEATH_BY_HAMSTERS.
 #############
 # FUNCTIONS #
 #############
-function log($message, $color)
-{
-	if ($color -eq $null) {$color = "gray"}
-	#console
-	write-host (get-date -f "yyyy-mm-dd hh:mm:ss") -n -f darkgray; write-host "$message" -f $color
-	#log
-	(get-date -f "yyyy-mm-dd hh:mm:ss") +"$message" | out-file -Filepath $logfile -append
-}
-
-# Literal log (no date/time prefix)
-function logliteral($message, $color)
-{
-	if ($color -eq $null) {$color = "gray"}
-	#console
-	write-host "$message" -f $color
-	#log
-	"$message" | out-file -Filepath $logfile -append
-}
 
 
 
